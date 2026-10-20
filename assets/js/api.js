@@ -553,8 +553,13 @@
             };
             if (!fetchers[period]) throw new Error('No financial data for period: ' + period);
 
-            const rows = await fetchers[period]();
-            if (!Array.isArray(rows) || rows.length === 0) return null;
+            const history = { days: 'getHistoryDay', months: 'getHistoryMonth', years: 'getHistoryYear' }[period];
+            const [financial, powergas] = await Promise.all([
+                fetchers[period](),
+                this[history](fetchLimit).catch(() => null)
+            ]);
+            if (!Array.isArray(financial) || financial.length === 0) return null;
+            const rows = this.guardGasCost(financial, powergas);
 
             // Newest first from the API; slice windows, then make them chronological
             const current = rows.slice(page * limit, (page + 1) * limit).reverse().map(r => this.costPoint(r));
@@ -571,6 +576,40 @@
                 hasOlder: previous.length > 0
             };
         },
+
+        /**
+         * P1 Monitor's financial gas cost can be wildly wrong for a bucket
+         * while its powergas gas volume for the same bucket is fine (seen as a
+         * ~EUR 8,000 gas month next to 5 m³ of gas). Cost per m³ normally
+         * stays within a small multiple of the configured tariff, so any bucket
+         * far above that is replaced by volume × tariff. Returns copies of the
+         * rows; rows without a matching powergas bucket are left untouched.
+         *
+         * @param {Array} financialRows - financial rows (any order)
+         * @param {Array} powergasRows - powergas rows for the same period
+         * @returns {Array} rows, with `gasCostEstimated: true` on corrected ones
+         */
+        guardGasCost(financialRows, powergasRows) {
+            if (!Array.isArray(financialRows) || !Array.isArray(powergasRows)) return financialRows;
+
+            const m3ByTime = new Map(powergasRows.map(r => [String(r.TIMESTAMP_UTC), parseFloat(r.CONSUMPTION_GAS_DELTA_M3)]));
+            const tariff = P1Utils.tariffs().gas;
+
+            return financialRows.map(row => {
+                const m3 = m3ByTime.get(String(row.TIMESTAMP_UTC));
+                const cost = parseFloat(row.CONSUMPTION_COST_GAS);
+                if (!Number.isFinite(m3) || !Number.isFinite(cost)) return row;
+
+                const estimate = Math.max(m3, 0) * tariff;
+                if (cost <= estimate * this.GAS_COST_TOLERANCE + 1) return row;
+
+                P1Logger.warn(`Gas cost € ${cost.toFixed(2)} for ${row.TIMESTAMP_lOCAL} does not match ${m3.toFixed(2)} m³; using € ${estimate.toFixed(2)}`);
+                return { ...row, CONSUMPTION_COST_GAS: estimate, gasCostEstimated: true };
+            });
+        },
+
+        // Gas cost above this multiple of volume × tariff (+ EUR 1) is treated as bad data
+        GAS_COST_TOLERANCE: 3,
 
         costPoint(row) {
             const num = (key) => parseFloat(row[key] || 0) || 0;
@@ -670,10 +709,10 @@
 
             const first = parseInt(rows[0]?.TIMESTAMP_UTC);
             const last = parseInt(rows[rows.length - 1]?.TIMESTAMP_UTC);
-            const financial = (financialData || []).filter(row => {
+            const financial = this.guardGasCost((financialData || []).filter(row => {
                 const ts = parseInt(row.TIMESTAMP_UTC);
                 return ts >= first && ts <= last;
-            });
+            }), rows);
 
             let totalCost;
             let gasCost;

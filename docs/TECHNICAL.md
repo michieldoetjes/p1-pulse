@@ -655,6 +655,12 @@ electricity, gas, water, revenue, net }` with `revenue` negative so it stacks be
 `{ electricity, gas, water, gross, revenue, net, average, peak, from, to }`. P1 Monitor's financial
 figures exclude fixed charges (vastrecht).
 
+P1 Monitor's financial gas cost can be wrong for a single bucket while its powergas volume is
+right (the month fixture has a EUR 8,146 gas month next to 5 m³). `guardGasCost(financialRows,
+powergasRows)` compares each bucket's gas cost with volume × the gas tariff and replaces it with
+that estimate when it is more than `GAS_COST_TOLERANCE` (3×) above it plus EUR 1. Both
+`getCostData` and `electricityStats` apply it; corrected rows carry `gasCostEstimated: true`.
+
 ### utils.js
 
 `P1Utils` — shared helpers: range options per period (`zoomOptions`, `defaultZooms`), Dutch date
@@ -1087,6 +1093,7 @@ php tests/run-solar-collector-tests.php        # collector aggregation only
 php tests/run-solar-api-tests.php              # the solar API only
 php tests/run-solar-api-tests.php --verbose    # also print every response body
 php tests/run-solar-api-tests.php --keep       # leave the temporary databases for inspection
+node tests/run-cost-guard-tests.js             # gas cost guard in api.js (not part of run-all.php)
 ```
 
 `tests/assert.php` holds the shared assertion helpers. `tests/run-solar-units-tests.php` pins
